@@ -1,129 +1,155 @@
 import streamlit as st
 import pdfplumber
-import docx
-import pandas as pd
-from openai import OpenAI
-import os
+import requests
+import json
 
-# ===========================
-# Load OpenAI API Key
-# ===========================
-# 1️⃣ Load from Streamlit secrets or fallback to environment variable
-os.environ["OPENAI_API_KEY"] = st.secrets["openai"]["api_key"]
-
-# 2️⃣ Initialize OpenAI client
-client = OpenAI()
-
-# ===========================
-# Page Config
-# ===========================
-st.set_page_config(
-    page_title="AI Research Assistant",
-    layout="wide",
-)
-
-# ===========================
-# Initialize Session State
-# ===========================
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-if "doc_text" not in st.session_state:
-    st.session_state.doc_text = ""
-
-# ===========================
-# Sidebar - File Upload
-# ===========================
-st.sidebar.header("📂 Upload Document")
-uploaded_file = st.sidebar.file_uploader(
-    "Choose PDF, DOCX, or XLSX",
-    type=["pdf", "docx", "xlsx"]
-)
-
-# ===========================
-# File Parsing Logic
-# ===========================
-def extract_text(file):
+# --- PDF Extraction ---
+def extract_text_from_pdf(uploaded_file):
     text = ""
-    if file.name.endswith(".pdf"):
-        with pdfplumber.open(file) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
-    elif file.name.endswith(".docx"):
-        doc = docx.Document(file)
-        for para in doc.paragraphs:
-            text += para.text + "\n"
-    elif file.name.endswith(".xlsx"):
-        df = pd.read_excel(file)
-        text = df.to_string(index=False)
-    return text
+    with pdfplumber.open(uploaded_file) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+    return text.strip()
 
-if uploaded_file:
-    extracted_text = extract_text(uploaded_file)
-    st.session_state.doc_text = extracted_text
-    st.sidebar.success(f"✅ {uploaded_file.name} uploaded & parsed!")
-    st.sidebar.write("**Preview:**")
-    st.sidebar.write(extracted_text[:300] + " ...")
+# --- Ask LLaMA API ---
+def ask_llama3_stream(question, context):
+    prompt = f"""You are a concise and helpful assistant like ChatGpt.
+Answer the question clearly using the context.
 
-# ===========================
-# GPT helper
-# ===========================
-def call_gpt(prompt, model="gpt-3.5-turbo"):
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": "You are a helpful research assistant."},
-            {"role": "user", "content": prompt}
-        ]
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:"""
+
+    response = requests.post(
+        "http://localhost:11434/api/generate",
+        headers={"Content-Type": "application/json"},
+        data=json.dumps({
+            "model": "phi3",  # or llama3 or mistral
+            "prompt": prompt,
+            "stream": True
+        }),
+        stream=True
     )
-    return response.choices[0].message.content
 
-# ===========================
-# Main Title
-# ===========================
-st.title("📚 AI Research Assistant")
-st.caption("Chat with your research documents!")
+    if response.status_code != 200:
+        yield "❌ Error talking to LLaMA."
+        return
 
-st.markdown("---")
+    for line in response.iter_lines():
+        if line:
+            data = json.loads(line.decode("utf-8"))
+            token = data.get("response", "")
+            yield token
 
-# ===========================
-# Chat History
-# ===========================
-for msg in st.session_state.messages:
-    if msg["role"] == "user":
-        st.chat_message("user").write(msg["content"])
-    else:
-        st.chat_message("assistant").write(msg["content"])
+# --- Page Setup ---
+st.set_page_config(page_title="📄 PDF Chat", layout="wide")
 
-# ===========================
-# Chat Input
-# ===========================
-user_input = st.chat_input("Ask a question, request a summary, or get topic suggestions...")
+# --- Custom CSS ---
+st.markdown("""
+<style>
+.chat-container {
+    max-height: 65vh;
+    overflow-y: auto;
+    padding: 1rem;
+    border-radius: 10px;
+    background-color: #f8fafc;
+    border: 1px solid #ddd;
+}
+.message {
+    padding: 0.75rem;
+    border-radius: 10px;
+    margin: 0.5rem 0;
+    line-height: 1.5;
+}
+.user-message {
+    background-color: #dbeafe;
+    color: #1e3a8a;
+    text-align: right;
+}
+.bot-message {
+    background-color: #e2e8f0;
+    color: #111827;
+    text-align: left;
+}
+textarea, input[type="text"] {
+    background-color: #f0f4f8 !important;
+    border-radius: 8px;
+    border: 1px solid #ccc;
+    padding: 0.5rem;
+}
+</style>
+""", unsafe_allow_html=True)
 
-if user_input:
-    st.session_state.messages.append({"role": "user", "content": user_input})
+# --- Session State Init ---
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-    if not st.session_state.doc_text:
-        response = "⚠️ *Please upload a document first!*"
-    else:
-        # Decide action based on user input
-        if "summary" in user_input.lower():
-            prompt = f"Please provide a clear summary of this document:\n\n{st.session_state.doc_text[:4000]}"
-        elif "topic" in user_input.lower():
-            prompt = f"Suggest 5 unique research topics based on this document:\n\n{st.session_state.doc_text[:4000]}"
-        else:
-            prompt = f"Answer this question based only on the document:\n\nDocument:\n{st.session_state.doc_text[:4000]}\n\nQuestion: {user_input}"
+if "all_chats" not in st.session_state:
+    st.session_state.all_chats = []
 
-        response = call_gpt(prompt)
+if "clear_input" not in st.session_state:
+    st.session_state.clear_input = False
 
-    st.session_state.messages.append({"role": "assistant", "content": response})
-    st.chat_message("assistant").write(response)
+# --- Sidebar ---
+with st.sidebar:
+    st.title("📄 PDF Chatbot")
+    uploaded_file = st.file_uploader("📤 Upload PDF", type="pdf")
 
-# ===========================
-# Footer
-# ===========================
-st.markdown("---")
-st.caption("🚀 Built with ❤️ using Streamlit & OpenAI | v3.0")
+    if st.button("🆕 New Chat"):
+        if st.session_state.chat_history:
+            st.session_state.all_chats.append(st.session_state.chat_history.copy())
+        st.session_state.chat_history = []
+        st.session_state.clear_input = True
+        st.experimental_rerun()
 
+    if st.session_state.all_chats:
+        st.markdown("### 🕓 Previous Chats")
+        for i, chat in enumerate(reversed(st.session_state.all_chats[-3:]), 1):
+            st.markdown(f"**Chat {len(st.session_state.all_chats)-i+1}**")
+            for role, msg in chat[-2:]:
+                icon = "🙋" if role == "user" else "🤖"
+                st.markdown(f"- {icon} {msg[:70]}{'...' if len(msg) > 70 else ''}")
+
+# --- Main App ---
+if uploaded_file:
+    text = extract_text_from_pdf(uploaded_file)
+
+    # --- Chat Display ---
+    st.markdown("### 💬 Chat History")
+    st.markdown('<div class="chat-container">', unsafe_allow_html=True)
+    for role, msg in st.session_state.chat_history:
+        css_class = "user-message" if role == "user" else "bot-message"
+        st.markdown(f'<div class="message {css_class}">{msg}</div>', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # --- Clear previous input ---
+    if st.session_state.clear_input:
+        st.session_state["question_input"] = ""
+        st.session_state.clear_input = False
+
+    # --- Chat Input UI with Button ---
+    with st.form(key="chat_form", clear_on_submit=True):
+        cols = st.columns([6, 1])
+        user_input = cols[0].text_input("Ask from the PDF...", key="question_input", label_visibility="collapsed", placeholder="Type your question...")
+        submitted = cols[1].form_submit_button("Send")
+
+    if submitted and user_input.strip():
+        st.session_state.chat_history.append(("user", user_input.strip()))
+        with st.spinner("🤖 Thinking..."):
+            streamed_answer = ""
+            response_placeholder = st.empty()
+            for token in ask_llama3_stream(user_input.strip(), context=text[:1500]):
+                streamed_answer += token
+                response_placeholder.markdown(f'<div class="message bot-message">{streamed_answer}▌</div>', unsafe_allow_html=True)
+
+            st.session_state.chat_history.append(("bot", streamed_answer.strip()))
+        st.rerun()
+
+else:
+    st.info("📄 Upload a PDF from the sidebar to begin.")
