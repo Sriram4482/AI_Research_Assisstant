@@ -1,1 +1,38 @@
+# Ignore Python cache and virtual envs
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# Ignore virtual environments
+.venv/
+env/
+venv/
+
+# Ignore system files
+.DS_Store
+Thumbs.db
+
+# Ignore model files (they're huge!)
+*.gguf
+/models/
+*.bin
+*.ckpt
+
+# Ignore Streamlit secrets (if any)
 .streamlit/secrets.toml
+
+# Ignore logs
+*.log
+
+# Ignore IDE/editor settings
+.vscode/
+.idea/
+
+# Ignore Jupyter notebooks checkpoints if you ever use them
+.ipynb_checkpoints/
+
+# macOS + Windows junk
+ehthumbs.db
+desktop.ini
